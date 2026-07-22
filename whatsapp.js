@@ -23,8 +23,12 @@ function normalizarJid(jid) {
   return jid.replace(/:\d+(?=@)/, '');
 }
 
-function estaPermitido(remitente) {
-  return ALLOWED_NUMBERS.includes(normalizarJid(remitente));
+// WhatsApp puede identificar al remitente con un LID (@lid) en vez de su
+// número real; Baileys expone el número real en key.remoteJidAlt cuando eso pasa.
+function estaPermitido(remitente, remitenteAlt) {
+  if (ALLOWED_NUMBERS.includes(normalizarJid(remitente))) return true;
+  if (remitenteAlt && ALLOWED_NUMBERS.includes(normalizarJid(remitenteAlt))) return true;
+  return false;
 }
 
 async function iniciar() {
@@ -56,7 +60,7 @@ async function iniciar() {
     if (mensaje.key.fromMe) return;
 
     const remitente = mensaje.key.remoteJid;
-    if (!estaPermitido(remitente)) return; // ignoramos en silencio a cualquiera que no sea el dueño
+    if (!estaPermitido(remitente, mensaje.key.remoteJidAlt)) return; // ignoramos en silencio a cualquiera que no sea el dueño
 
     const contenido = mensaje.message;
     const textoPlano = contenido.conversation || contenido.extendedTextMessage?.text;
