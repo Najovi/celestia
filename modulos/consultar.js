@@ -7,6 +7,8 @@ module.exports = {
   pregunta: '🔎 Decime qué querés consultar.',
   procesando: '🔎 Buscando en tu vault...',
   async ejecutar(texto) {
-    return await nucleo.responderConsulta(texto);
+    const { texto: respuesta, notas } = await nucleo.responderConsulta(texto);
+    if (notas.length === 0) return respuesta;
+    return { texto: respuesta, aprendizaje: { pregunta: texto, notas } };
   }
 };

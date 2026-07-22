@@ -7,7 +7,18 @@ module.exports = {
   pregunta: '📝 Decime qué querés guardar.',
   procesando: '🤖 Decidiendo dónde guardarlo...',
   async ejecutar(texto) {
-    const ruta = await nucleo.anotarInteligente(texto);
-    return `✅ Guardado en "${ruta}"`;
+    const resultado = await nucleo.anotarInteligente(texto);
+    if (resultado.necesitaNombre) {
+      return {
+        texto: '🤔 No encontré una nota adecuada para esto. ¿Querés que cree una carpeta nueva? Decime el nombre.',
+        pendiente: { contenido: texto }
+      };
+    }
+    return `✅ Guardado en "${resultado.ruta}"`;
+  },
+  async continuar(nombreCarpeta, pendiente) {
+    const nombre = nombreCarpeta.trim();
+    const ruta = await nucleo.crearCarpetaConNota(nombre, pendiente.contenido);
+    return `✅ Carpeta "${nombre}" creada, guardado en "${ruta}"`;
   }
 };

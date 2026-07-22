@@ -47,13 +47,13 @@ NOTA ACTUAL (completa, tal cual está guardada):
 ${contenidoOriginal}
 <<<FIN>>>
 
-MENSAJE DEL USUARIO con la idea nueva a integrar (puede tener frases como "quiero agregar" que NO son parte del contenido, solo describen la intención):
+MENSAJE DEL USUARIO con la idea nueva a integrar (puede venir dictado por voz, con muletillas, desorden o frases como "quiero agregar" o "guardá esto" que NO son parte del contenido, solo describen la intención):
 "${ideaCruda}"
 
 Tu tarea:
-1. Extraé la idea real del mensaje del usuario.
+1. Extraé la idea real del mensaje del usuario, descartando muletillas y frases dirigidas al asistente.
 2. Integrá esa idea en el lugar más adecuado de la nota.
-3. Redactala breve y clara, en el mismo estilo del resto de la sección.
+3. Redactala breve y clara, en primera persona, en el mismo estilo del resto de la sección.
 4. Devolvé la NOTA COMPLETA con la idea ya integrada.
 
 REGLAS INQUEBRANTABLES:
@@ -103,6 +103,47 @@ function buscarPorPistas(texto) {
   return Array.from(notasEncontradas);
 }
 
+const PALABRAS_VACIAS = new Set([
+  'que', 'para', 'como', 'pero', 'esta', 'estan', 'están', 'donde', 'dónde', 'cuando', 'cuándo',
+  'desde', 'hasta', 'sobre', 'tengo', 'tiene', 'tenés', 'vos', 'yo', 'me', 'mi', 'tu', 'su', 'sus',
+  'les', 'nos', 'una', 'uno', 'unos', 'unas', 'del', 'las', 'los', 'por', 'con', 'sin', 'muy', 'mas',
+  'más', 'ese', 'esa', 'eso', 'esos', 'esas', 'este', 'esto', 'estos', 'estas', 'cual', 'cuál',
+  'cuales', 'cuáles', 'quien', 'quién', 'quienes', 'quiénes', 'porque', 'porqué', 'soy', 'eres',
+  'son', 'fue', 'ser', 'estar', 'hay', 'sea', 'sean', 'algo', 'alguna', 'algún', 'todo', 'toda',
+]);
+
+// Palabras "significativas" del mensaje: sirven como pistas rápidas para la próxima vez.
+function extraerPalabrasClave(texto) {
+  return [...new Set(
+    texto.toLowerCase()
+      .replace(/[^\p{L}\s]/gu, '')
+      .split(/\s+/)
+      .filter(p => p.length > 3 && !PALABRAS_VACIAS.has(p))
+  )].slice(0, 4);
+}
+
+function guardarPistas() {
+  fs.writeFileSync(path.join(__dirname, 'pistas.json'), JSON.stringify(pistas, null, 2));
+}
+
+// Autoaprendizaje: cuando el usuario confirma que una consulta encontró lo que buscaba,
+// guardamos sus palabras clave apuntando a esas notas para resolverla más rápido la próxima vez.
+function aprenderDeConsulta(pregunta, notas) {
+  const claves = extraerPalabrasClave(pregunta);
+  if (claves.length === 0 || !notas || notas.length === 0) return;
+
+  for (const nota of notas) {
+    const existente = pistas.find(p => p.nota === nota);
+    if (existente) {
+      const nuevas = claves.filter(c => !existente.claves.includes(c));
+      existente.claves.push(...nuevas);
+    } else {
+      pistas.push({ claves, nota });
+    }
+  }
+  guardarPistas();
+}
+
 async function elegirNotasRelevantes(pregunta) {
   const notasPorPistas = buscarPorPistas(pregunta);
 
@@ -150,20 +191,67 @@ Respondé ÚNICAMENTE con la ruta o "NUEVA:...".`;
   return { ruta: respuesta, esNueva: false };
 }
 
+// Intenta ubicar la info en una nota existente. Si no hay ninguna adecuada
+// (o la que eligió el modelo resultó no existir), devolvemos necesitaNombre
+// para que quien llama le pida al usuario cómo llamar a la carpeta nueva.
 async function anotarInteligente(textoNuevo) {
   const decision = await decidirNotaDestino(textoNuevo);
   if (decision.esNueva) {
-    await obsidian.crearNota(decision.ruta, `# ${decision.ruta.replace('.md', '')}\n\n${textoNuevo}\n`);
-    invalidarCacheNotas();
-  } else {
-    await fusionarNota(decision.ruta, textoNuevo);
+    return { necesitaNombre: true };
   }
-  return decision.ruta;
+
+  try {
+    await fusionarNota(decision.ruta, textoNuevo);
+    return { ruta: decision.ruta, necesitaNombre: false };
+  } catch (e) {
+    if (String(e.message).includes('(404)')) return { necesitaNombre: true };
+    throw e;
+  }
+}
+
+// Reescribe un mensaje crudo (a veces dictado por voz, con muletillas o
+// instrucciones al asistente tipo "guardá esto") como una nota personal
+// prolija, en primera persona, sin perder ni inventar información.
+async function reescribirComoNota(textoCrudo) {
+  const prompt = `Sos un asistente que ayuda a una persona a llevar sus notas personales en Obsidian.
+
+Mensaje original, tal como lo dijo o escribió (puede tener muletillas, desorden propio de hablar, o frases dirigidas al asistente como "guardá esto" o "anotá que"):
+"${textoCrudo}"
+
+Reescribilo como una nota personal: en primera persona, clara y ordenada, tal como la persona la escribiría para sí misma. Si el contenido tiene pasos, ingredientes o ítems, usá una lista. No agregues información que no esté en el mensaje original, ni inventes datos, ni agregues comentarios tuyos.
+
+Devolvé ÚNICAMENTE el contenido reescrito.`;
+
+  return await ollama.preguntar(prompt, 0.3);
+}
+
+// Genera un título corto y apto para nombre de archivo a partir del contenido.
+async function generarTitulo(textoCrudo) {
+  const prompt = `Basándote en este contenido, generá un título corto (entre 3 y 6 palabras) que describa el tema, apto para usar como nombre de archivo.
+
+Contenido: "${textoCrudo}"
+
+Respondé ÚNICAMENTE con el título, sin comillas ni puntuación final.`;
+
+  const respuesta = await ollama.preguntar(prompt, 0.2);
+  const limpio = respuesta.replace(/["/\\:*?<>|]/g, '').trim();
+  return limpio.slice(0, 60);
+}
+
+async function crearCarpetaConNota(nombreCarpeta, contenidoCrudo) {
+  const contenido = await reescribirComoNota(contenidoCrudo);
+  const titulo = (await generarTitulo(contenidoCrudo)) || nombreCarpeta;
+  const nombreArchivo = `${nombreCarpeta}/${titulo}.md`;
+  await obsidian.crearNota(nombreArchivo, `# ${titulo}\n\n${contenido}\n`);
+  invalidarCacheNotas();
+  return nombreArchivo;
 }
 
 async function responderConsulta(pregunta) {
   const notasRelevantes = await elegirNotasRelevantes(pregunta);
-  if (notasRelevantes.length === 0) return 'No encontré información relevante en tu vault para responder eso.';
+  if (notasRelevantes.length === 0) {
+    return { texto: 'No encontré información relevante en tu vault para responder eso.', notas: [] };
+  }
 
   let contexto = '';
   for (const nota of notasRelevantes) {
@@ -179,7 +267,7 @@ Pregunta: "${pregunta}"
 Si la información no está en las notas, decilo claramente. No inventes datos.`;
 
   const respuesta = await ollama.preguntar(prompt, 0.2);
-  return `${respuesta}\n\n📄 Fuente: ${notasRelevantes.join(', ')}`;
+  return { texto: `${respuesta}\n\n📄 Fuente: ${notasRelevantes.join(', ')}`, notas: notasRelevantes };
 }
 
 async function editarConIA(instruccion, tipoOperacion) {
@@ -220,6 +308,6 @@ Devolvé ÚNICAMENTE:
 module.exports = {
   ...obsidian,
   transcribirAudio: whisper.transcribir,
-  fusionarNota, anotarInteligente, responderConsulta, editarConIA,
-  elegirNotasRelevantes, decidirNotaDestino
+  fusionarNota, anotarInteligente, crearCarpetaConNota, responderConsulta, editarConIA,
+  elegirNotasRelevantes, decidirNotaDestino, aprenderDeConsulta
 };

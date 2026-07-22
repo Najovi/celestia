@@ -110,6 +110,20 @@ async function iniciar() {
         return;
       }
 
+      // Paso: esperando confirmación de si la consulta encontró lo que el usuario buscaba
+      if (sesion.paso === 'esperando_feedback') {
+        const esPositivo = ['si', 'sí', 'sirvio', 'sirvió', 'gracias', 'bien', 'genial', 'perfecto'].includes(textoLower);
+        if (esPositivo) {
+          const { pregunta, notas } = sesion.feedbackContext;
+          nucleo.aprenderDeConsulta(pregunta, notas);
+          estados.set(remitente, { paso: 'esperando_opcion' });
+          await sock.sendMessage(remitente, { text: '🧠 Guardado, la próxima lo va a encontrar más rápido.\n\n(Escribí "menu" para ver opciones o "exit" para salir)' });
+          return;
+        }
+        // No fue una confirmación: no lo tratamos como error, seguimos el mensaje como si estuviera en el menú
+        sesion.paso = 'esperando_opcion';
+      }
+
       // Paso: esperando que elija opción del menú
       if (sesion.paso === 'esperando_opcion') {
         const modulo = interpretarOpcion(modulos, texto);
@@ -149,10 +163,31 @@ async function iniciar() {
       // Paso: esperando el contenido real para un módulo simple
       if (sesion.paso === 'esperando_contenido') {
         const { modulo } = sesion;
-        estados.set(remitente, { paso: 'esperando_opcion' }); // después de ejecutar, volvemos a esperar opción (sesión sigue abierta)
 
         await sock.sendMessage(remitente, { text: modulo.procesando });
-        const respuesta = await modulo.ejecutar(texto);
+        const resultado = await modulo.ejecutar(texto);
+        const esAprendible = resultado && typeof resultado === 'object';
+        const textoRespuesta = esAprendible ? resultado.texto : resultado;
+
+        if (esAprendible && resultado.aprendizaje) {
+          estados.set(remitente, { paso: 'esperando_feedback', feedbackContext: resultado.aprendizaje });
+          await sock.sendMessage(remitente, { text: `${textoRespuesta}\n\n¿Te sirvió? Escribí "sí" para que lo recuerde la próxima vez.` });
+        } else if (esAprendible && resultado.pendiente) {
+          estados.set(remitente, { paso: 'esperando_nombre_carpeta', modulo, pendiente: resultado.pendiente });
+          await sock.sendMessage(remitente, { text: textoRespuesta });
+        } else {
+          estados.set(remitente, { paso: 'esperando_opcion' }); // sesión sigue abierta
+          await sock.sendMessage(remitente, { text: textoRespuesta + '\n\n(Escribí "menu" para ver opciones o "exit" para salir)' });
+        }
+        return;
+      }
+
+      // Paso: esperando el nombre de carpeta para guardar contenido que no encajaba en ninguna nota existente
+      if (sesion.paso === 'esperando_nombre_carpeta') {
+        const { modulo, pendiente } = sesion;
+        await sock.sendMessage(remitente, { text: '📁 Creando carpeta y guardando...' });
+        const respuesta = await modulo.continuar(texto, pendiente);
+        estados.set(remitente, { paso: 'esperando_opcion' });
         await sock.sendMessage(remitente, { text: respuesta + '\n\n(Escribí "menu" para ver opciones o "exit" para salir)' });
         return;
       }

@@ -11,9 +11,8 @@ function cargarModulos() {
 }
 
 function generarMenu(modulos) {
-  const logo = `   ✦   ˚ 　 　     ✧\n　   　⋆｡°✩\n  🌘 C E L E S T I A\n　 　   ⋆｡°✩\n   ✧　　      ˚    ✦\n\n`;
   const lineas = modulos.map(m => `${m.emoji} ${m.nombre}`);
-  return `${logo}elegí una opción:\n\n${lineas.join('\n')}`;
+  return `🌘 *CelestIA*\n\nElegí una opción:\n\n${lineas.join('\n')}`;
 }
 
 function interpretarOpcion(modulos, texto) {

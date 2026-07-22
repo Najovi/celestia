@@ -12,8 +12,8 @@ El bot solo responde a los números de WhatsApp que vos definas en `ALLOWED_NUMB
 - 2️⃣ **Consultar**: preguntás algo y el bot busca las notas relevantes (por palabras clave + criterio del modelo) y responde basándose solo en ese contenido.
 - 3️⃣ **Modificar** / 4️⃣ **Eliminar**: editás partes puntuales de una nota existente en lenguaje natural.
 - 5️⃣ **Explorar carpetas**: navegás tu vault carpeta por carpeta desde WhatsApp.
-- 7️⃣ **Crear carpeta + nota**: crea una carpeta nueva con una nota inicial.
 - 🎙️ Mensajes de audio: se transcriben automáticamente antes de procesarse como cualquier otro mensaje.
+- 🧠 **Autoaprendizaje**: cuando confirmás que una Consulta encontró lo que buscabas, el bot guarda palabras clave de esa pregunta apuntando a esas notas (`nucleo/pistas.json`) para resolver consultas parecidas más rápido la próxima vez.
 - 🛟 Antes de cualquier edición o fusión, se guarda un backup de la nota original en `backups/`, y si la IA devuelve un contenido sospechosamente más corto que el original, la escritura se cancela (no se pierde información por una mala respuesta del modelo).
 
 ## Requisitos
@@ -57,7 +57,7 @@ Al iniciar por primera vez vas a ver un código QR en la terminal: escaneálo de
 | `celestia`    | Activa la sesión y muestra el menú                 |
 | `menu`        | Vuelve a mostrar el menú sin cerrar la sesión       |
 | `exit`        | Cierra la sesión (hay que decir la palabra clave de nuevo) |
-| `1`–`7`       | Elige una opción del menú                          |
+| `1`–`5`       | Elige una opción del menú                          |
 
 ## Estructura del proyecto
 
