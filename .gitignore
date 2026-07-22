@@ -1,0 +1,17 @@
+node_modules/
+
+# Credenciales y config local — nunca subir
+.env
+
+# Sesión de WhatsApp (Baileys) — equivale a estar logueado
+auth_info/
+
+# Backups de notas: son contenido personal real, no código
+backups/
+
+# Pistas de enrutamiento: suelen revelar nombres/temas de notas personales
+nucleo/pistas.json
+
+# Logs
+*.log
+npm-debug.log*
