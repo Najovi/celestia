@@ -1,5 +1,7 @@
 const cerebro = require('../nucleo');
 
+const MAX_CONTENIDO_NOTA = 4000;
+
 function nombreCorto(ruta) {
   const partes = ruta.replace(/\/$/, '').split('/');
   return partes[partes.length - 1].replace('.md', '');
@@ -7,12 +9,17 @@ function nombreCorto(ruta) {
 
 function armarTextoNivel(carpetas, notas, rutaActual) {
   const items = [...carpetas, ...notas];
+  const ubicacion = rutaActual ? `📂 ${rutaActual}` : '📂 Raíz de tu vault';
+
+  if (items.length === 0) {
+    return `${ubicacion}\n\nEsta carpeta está vacía.\n\n(".." para volver, "menu" para salir)`;
+  }
+
   const lineas = items.map((item, i) => {
     const esCarpeta = item.endsWith('/');
     return `${i + 1}. ${esCarpeta ? '📁' : '📄'} ${nombreCorto(item)}`;
   });
 
-  const ubicacion = rutaActual ? `📂 ${rutaActual}` : '📂 Raíz de tu vault';
   return `${ubicacion}\n\n${lineas.join('\n')}\n\nEscribí el número para entrar/ver.\n(".." para volver, "menu" para salir)`;
 }
 
@@ -21,6 +28,28 @@ async function mostrarListado(rutaActual) {
   return {
     texto: armarTextoNivel(carpetas, notas, rutaActual),
     estado: { modo: 'lista', rutaActual, items: [...carpetas, ...notas] }
+  };
+}
+
+// Muestra un tramo del contenido de una nota desde "desde". Si sobra contenido,
+// guarda en el estado dónde quedó para poder seguir con el comando "más".
+function armarRespuestaNota(ruta, contenidoCompleto, desde, estadoBase) {
+  const restante = contenidoCompleto.slice(desde);
+  const haySiguiente = restante.length > MAX_CONTENIDO_NOTA;
+  const trozo = haySiguiente ? restante.slice(0, MAX_CONTENIDO_NOTA) : restante;
+  const encabezado = desde === 0 ? `📄 *${nombreCorto(ruta)}*\n\n` : '';
+  const pie = haySiguiente
+    ? '\n\n[...escribí "más" para seguir leyendo...]\n\n(".." para volver, "menu" para salir)'
+    : '\n\n(".." para volver, "menu" para salir)';
+
+  return {
+    texto: `${encabezado}${trozo}${pie}`,
+    estado: {
+      modo: 'nota',
+      rutaActual: estadoBase.rutaActual,
+      items: estadoBase.items,
+      lectura: haySiguiente ? { ruta, contenidoCompleto, posicion: desde + trozo.length } : null
+    }
   };
 }
 
@@ -36,6 +65,11 @@ module.exports = {
 
   async manejarMensaje(texto, estado) {
     const t = texto.trim().toLowerCase();
+
+    if ((t === 'más' || t === 'mas' || t === 'seguir') && estado.modo === 'nota' && estado.lectura) {
+      const { ruta, contenidoCompleto, posicion } = estado.lectura;
+      return armarRespuestaNota(ruta, contenidoCompleto, posicion, estado);
+    }
 
     if (t === '..') {
       // Si estábamos viendo una nota, ".." nos devuelve a la lista de la carpeta actual (sin subir de nivel)
@@ -54,9 +88,17 @@ module.exports = {
     }
 
     const num = parseInt(t, 10);
-    const elegido = (!isNaN(num) && estado.items[num - 1])
-      ? estado.items[num - 1]
-      : estado.items.find(i => nombreCorto(i).toLowerCase().includes(t));
+    let elegido = (!isNaN(num) && estado.items[num - 1]) ? estado.items[num - 1] : null;
+
+    if (!elegido) {
+      const coincidencias = estado.items.filter(i => nombreCorto(i).toLowerCase().includes(t));
+      if (coincidencias.length === 1) {
+        elegido = coincidencias[0];
+      } else if (coincidencias.length > 1) {
+        const lista = coincidencias.map(i => `- ${nombreCorto(i)}`).join('\n');
+        return { texto: `🔎 Hay más de una coincidencia con "${texto}":\n\n${lista}\n\nEscribí el número de la lista para elegir una.`, estado };
+      }
+    }
 
     if (!elegido) {
       return { texto: '❓ No encontré esa opción. Elegí un número de la lista, o "menu" para salir.', estado };
@@ -64,11 +106,14 @@ module.exports = {
 
     if (elegido.endsWith('/')) {
       return mostrarListado(elegido);
-    } else {
+    }
+
+    try {
       const contenido = await cerebro.leerNota(elegido);
-      const textoResp = `📄 *${nombreCorto(elegido)}*\n\n${contenido}\n\n(".." para volver, "menu" para salir)`;
-      // Guardamos modo 'nota', pero mantenemos rutaActual e items para poder volver a la lista con ".."
-      return { texto: textoResp, estado: { modo: 'nota', rutaActual: estado.rutaActual, items: estado.items } };
+      return armarRespuestaNota(elegido, contenido, 0, estado);
+    } catch (e) {
+      // No cortamos la sesión de exploración por un error de lectura puntual (nota movida/borrada, hipo de la API).
+      return { texto: `❌ No pude abrir "${nombreCorto(elegido)}" (puede que se haya movido o borrado). Seguís en la lista.`, estado };
     }
   }
 };
