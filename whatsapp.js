@@ -67,7 +67,8 @@ async function iniciar() {
   });
 
   // Ejecuta un módulo simple (no interactivo) y despacha el resultado según lo que devuelva:
-  // texto plano, {texto, aprendizaje} (pide feedback) o {texto, pendiente} (pide un dato más).
+  // texto plano, {texto, aprendizaje} (pide feedback), {texto, pendiente} (pide un dato más),
+  // o {texto, confirmarEdicion} (pide confirmar/elegir la nota antes de escribir).
   async function ejecutarModulo(remitente, modulo, texto) {
     await sock.sendMessage(remitente, { text: modulo.procesando });
     const resultado = await modulo.ejecutar(texto);
@@ -79,6 +80,9 @@ async function iniciar() {
       await sock.sendMessage(remitente, { text: `${textoRespuesta}\n\n¿Te sirvió? Escribí "sí" para que lo recuerde la próxima vez.` });
     } else if (esObjeto && resultado.pendiente) {
       estados.set(remitente, { paso: 'esperando_nombre_carpeta', modulo, pendiente: resultado.pendiente });
+      await sock.sendMessage(remitente, { text: textoRespuesta });
+    } else if (esObjeto && resultado.confirmarEdicion) {
+      estados.set(remitente, { paso: 'esperando_confirmacion_edicion', modulo, contexto: resultado.confirmarEdicion });
       await sock.sendMessage(remitente, { text: textoRespuesta });
     } else {
       estados.set(remitente, { paso: 'esperando_opcion' }); // sesión sigue abierta
@@ -195,6 +199,32 @@ async function iniciar() {
       // Paso: esperando el contenido real para un módulo simple
       if (sesion.paso === 'esperando_contenido') {
         await ejecutarModulo(remitente, sesion.modulo, texto);
+        return;
+      }
+
+      // Paso: esperando que confirme/elija qué nota modificar o eliminar antes de aplicar el cambio
+      if (sesion.paso === 'esperando_confirmacion_edicion') {
+        const { modulo, contexto } = sesion;
+        const { instruccion, candidatas } = contexto;
+
+        let rutaElegida = null;
+        if (candidatas.length === 1) {
+          if (esConfirmacionPositiva(textoLower)) rutaElegida = candidatas[0];
+        } else {
+          const num = parseInt(textoLower, 10);
+          if (!isNaN(num) && candidatas[num - 1]) rutaElegida = candidatas[num - 1];
+        }
+
+        if (!rutaElegida) {
+          estados.set(remitente, { paso: 'esperando_opcion' });
+          await sock.sendMessage(remitente, { text: '❎ Cancelado, no se tocó nada.\n\n(Escribí "menu" para ver opciones o "exit" para salir)' });
+          return;
+        }
+
+        await sock.sendMessage(remitente, { text: modulo.procesando });
+        const respuesta = await modulo.confirmar(rutaElegida, instruccion);
+        estados.set(remitente, { paso: 'esperando_opcion' });
+        await sock.sendMessage(remitente, { text: respuesta + '\n\n(Escribí "menu" para ver opciones o "exit" para salir)' });
         return;
       }
 

@@ -313,11 +313,9 @@ Si la información no está en las notas, decilo claramente. No inventes datos.`
   return { texto: `${respuesta}\n\n📄 Fuente: ${notasRelevantes.join(', ')}`, notas: notasRelevantes };
 }
 
-async function editarConIA(instruccion, tipoOperacion) {
-  const notasRelevantes = await elegirNotasRelevantes(instruccion);
-  if (notasRelevantes.length === 0) throw new Error('No encontré ninguna nota relacionada con eso.');
-
-  const rutaNota = notasRelevantes[0];
+// Aplica una modificación/eliminación sobre una nota YA elegida (después de que
+// quien llama confirmó cuál es, para no arriesgarse a pisar la nota equivocada).
+async function aplicarEdicion(rutaNota, instruccion, tipoOperacion) {
   const contenidoOriginal = await obsidian.leerNota(rutaNota);
 
   const instruccionEspecifica = tipoOperacion === 'eliminar'
@@ -342,15 +340,25 @@ Devolvé ÚNICAMENTE:
   const contenidoNuevo = ollama.extraerEntreMarcadores(respuesta);
   if (!contenidoNuevo) throw new Error('No se pudo interpretar la respuesta del modelo');
 
+  // "Modificar" debería tocar solo una parte puntual: si el resultado viene mucho más
+  // corto de lo esperado, probablemente el modelo se comió contenido que no debía.
+  if (tipoOperacion === 'modificar' && contenidoNuevo.length < contenidoOriginal.trim().length * 0.85) {
+    throw new Error('El contenido devuelto es sospechosamente más corto. No se guardó por seguridad.');
+  }
+  // "Eliminar" sí puede achicar la nota a propósito, pero no debería dejarla casi vacía
+  // (salvo que la nota original ya fuera chica) — eso sería señal de que se comió todo.
+  if (tipoOperacion === 'eliminar' && contenidoNuevo.trim().length < 15 && contenidoOriginal.trim().length > 100) {
+    throw new Error('El resultado quedó casi vacío. No se guardó por seguridad.');
+  }
+
   guardarBackup(rutaNota, contenidoOriginal);
   await obsidian.sobrescribirNota(rutaNota, contenidoNuevo);
   invalidarResumen(rutaNota);
-  return rutaNota;
 }
 
 module.exports = {
   ...obsidian,
   transcribirAudio: whisper.transcribir,
-  fusionarNota, anotarInteligente, crearCarpetaConNota, responderConsulta, editarConIA,
+  fusionarNota, anotarInteligente, crearCarpetaConNota, responderConsulta, aplicarEdicion,
   elegirNotasRelevantes, decidirNotaDestino, aprenderDeConsulta
 };
