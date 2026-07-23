@@ -92,17 +92,27 @@ async function obtenerResumenEstructura(ruta) {
   }
 }
 
+// Coincidencia por palabra/frase completa (con límites basados en letras unicode), no por
+// substring crudo: evita que una clave corta como "edad" matchee dentro de "ciudad".
+function coincideClave(texto, clave) {
+  const escapada = clave.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const regex = new RegExp(`(^|[^\\p{L}])${escapada}([^\\p{L}]|$)`, 'iu');
+  return regex.test(texto);
+}
+
 function buscarPorPistas(texto) {
-  const t = texto.toLowerCase();
   const notasEncontradas = new Set();
   for (const pista of pistas) {
-    if (pista.claves.some(clave => t.includes(clave))) {
+    if (pista.claves.some(clave => coincideClave(texto, clave))) {
       notasEncontradas.add(pista.nota);
     }
   }
   return Array.from(notasEncontradas);
 }
 
+// Muletillas y verbos genéricos de una pregunta/pedido, no temas reales.
+// Se usan como red de seguridad tanto para el fallback de extracción como para
+// filtrar lo que devuelva el modelo en extraerTemasClave.
 const PALABRAS_VACIAS = new Set([
   'que', 'para', 'como', 'pero', 'esta', 'estan', 'están', 'donde', 'dónde', 'cuando', 'cuándo',
   'desde', 'hasta', 'sobre', 'tengo', 'tiene', 'tenés', 'vos', 'yo', 'me', 'mi', 'tu', 'su', 'sus',
@@ -110,10 +120,14 @@ const PALABRAS_VACIAS = new Set([
   'más', 'ese', 'esa', 'eso', 'esos', 'esas', 'este', 'esto', 'estos', 'estas', 'cual', 'cuál',
   'cuales', 'cuáles', 'quien', 'quién', 'quienes', 'quiénes', 'porque', 'porqué', 'soy', 'eres',
   'son', 'fue', 'ser', 'estar', 'hay', 'sea', 'sean', 'algo', 'alguna', 'algún', 'todo', 'toda',
+  'quiero', 'quisiera', 'querés', 'queres', 'podrías', 'podrias', 'podés', 'podes', 'puedes',
+  'decime', 'dime', 'decirme', 'contarme', 'cuéntame', 'cuentame', 'contame', 'compárteme',
+  'comparteme', 'necesito', 'busco', 'dame', 'gustaría', 'gustaria', 'favor', 'porfa', 'porfavor', 'ayuda', 'ayudame',
+  'ayúdame', 'saber', 'sabes', 'sabés', 'información', 'informacion', 'dato', 'datos', 'gracias',
 ]);
 
-// Palabras "significativas" del mensaje: sirven como pistas rápidas para la próxima vez.
-function extraerPalabrasClave(texto) {
+// Fallback si falla la extracción por modelo: palabras largas que no sean muletillas.
+function extraerPalabrasClaveSimple(texto) {
   return [...new Set(
     texto.toLowerCase()
       .replace(/[^\p{L}\s]/gu, '')
@@ -122,14 +136,37 @@ function extraerPalabrasClave(texto) {
   )].slice(0, 4);
 }
 
+// Le pide al modelo el/los tema(s) real(es) de la pregunta (no verbos ni cortesías),
+// para no ensuciar las pistas con palabras genéricas tipo "quiero", "saber", "podrías".
+async function extraerTemasClave(pregunta) {
+  try {
+    const prompt = `De esta pregunta que le hace un usuario a su asistente personal, extraé entre 1 y 3 palabras clave que describan el TEMA real (sustantivos concretos), ignorando saludos, cortesías y verbos genéricos como "quiero", "podrías", "decime", "saber".
+
+Pregunta: "${pregunta}"
+
+Respondé ÚNICAMENTE las palabras clave en minúscula, separadas por coma. Si no hay ningún tema claro, respondé "NINGUNA".`;
+
+    const respuesta = await ollama.preguntar(prompt, 0.1);
+    if (respuesta.toUpperCase().includes('NINGUNA')) return [];
+
+    const claves = respuesta.toLowerCase().split(',')
+      .map(p => p.trim().replace(/[.:;!?"']/g, ''))
+      .filter(p => p.length > 2 && !PALABRAS_VACIAS.has(p));
+    if (claves.length > 0) return claves.slice(0, 3);
+  } catch (e) {
+    // seguimos al fallback de abajo
+  }
+  return extraerPalabrasClaveSimple(pregunta);
+}
+
 function guardarPistas() {
   fs.writeFileSync(path.join(__dirname, 'pistas.json'), JSON.stringify(pistas, null, 2));
 }
 
 // Autoaprendizaje: cuando el usuario confirma que una consulta encontró lo que buscaba,
 // guardamos sus palabras clave apuntando a esas notas para resolverla más rápido la próxima vez.
-function aprenderDeConsulta(pregunta, notas) {
-  const claves = extraerPalabrasClave(pregunta);
+async function aprenderDeConsulta(pregunta, notas) {
+  const claves = await extraerTemasClave(pregunta);
   if (claves.length === 0 || !notas || notas.length === 0) return;
 
   for (const nota of notas) {
@@ -149,20 +186,20 @@ async function elegirNotasRelevantes(pregunta) {
 
   const notas = await listarNotasCacheadas();
   const resumenes = [];
-  for (const nota of notas) resumenes.push(`- "${nota}": ${await obtenerResumenEstructura(nota)}`);
+  for (let i = 0; i < notas.length; i++) resumenes.push(`${i + 1}. "${notas[i]}": ${await obtenerResumenEstructura(notas[i])}`);
 
-  const prompt = `Tenés estas notas de un vault de Obsidian, cada una con sus encabezados/temas principales:
+  const prompt = `Tenés estas notas de un vault de Obsidian, numeradas, cada una con sus encabezados/temas principales:
 
 ${resumenes.join('\n')}
 
 Pregunta del usuario: "${pregunta}"
 
-Elegí cuáles notas (1 a 3 como máximo) son las más relevantes, basándote en los temas reales que ves arriba. Respondé ÚNICAMENTE con las rutas exactas entre comillas, separadas por coma. Solo si ninguna tiene relación real, respondé "NINGUNA".`;
+Elegí cuáles notas (1 a 3 como máximo) son las más relevantes, basándote en los temas reales que ves arriba. Respondé ÚNICAMENTE con los NÚMEROS de esas notas, separados por coma (ej: "2, 5"). Si ninguna tiene relación real, respondé "NINGUNA".`;
 
   const respuesta = await ollama.preguntar(prompt, 0.1);
   const notasPorModelo = respuesta.toUpperCase().includes('NINGUNA')
     ? []
-    : notas.filter(n => respuesta.includes(n));
+    : [...respuesta.matchAll(/\d+/g)].map(m => notas[Number(m[0]) - 1]).filter(Boolean);
 
   // Combinamos pistas + modelo, sin duplicados, priorizando las pistas primero
   const combinado = [...new Set([...notasPorPistas, ...notasPorModelo])];
@@ -247,6 +284,8 @@ async function crearCarpetaConNota(nombreCarpeta, contenidoCrudo) {
   return nombreArchivo;
 }
 
+const MAX_CONTEXTO_POR_NOTA = 4000;
+
 async function responderConsulta(pregunta) {
   const notasRelevantes = await elegirNotasRelevantes(pregunta);
   if (notasRelevantes.length === 0) {
@@ -255,7 +294,11 @@ async function responderConsulta(pregunta) {
 
   let contexto = '';
   for (const nota of notasRelevantes) {
-    contexto += `\n--- ${nota} ---\n${await obsidian.leerNota(nota)}\n`;
+    const contenido = await obsidian.leerNota(nota);
+    const recortado = contenido.length > MAX_CONTEXTO_POR_NOTA
+      ? contenido.slice(0, MAX_CONTEXTO_POR_NOTA) + '\n[...contenido recortado...]'
+      : contenido;
+    contexto += `\n--- ${nota} ---\n${recortado}\n`;
   }
 
   const prompt = `Basándote ÚNICAMENTE en el siguiente contenido de las notas del usuario, respondé la pregunta de forma breve y directa.

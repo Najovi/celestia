@@ -31,6 +31,17 @@ function estaPermitido(remitente, remitenteAlt) {
   return false;
 }
 
+const CONFIRMACIONES_POSITIVAS = [
+  'si', 'sí', 'sip', 'sipi', 'sisi', 'exacto', 'correcto', 'dale', 'joya', 'genial',
+  'perfecto', 'buenisimo', 'buenísimo', 'bien', 'gracias', 'ok', 'okay', 'tal cual', 'eso es',
+];
+
+function esConfirmacionPositiva(texto) {
+  const limpio = texto.toLowerCase().replace(/[¡!¿?.,;:]/g, '').trim();
+  const palabras = limpio.split(/\s+/);
+  return CONFIRMACIONES_POSITIVAS.some(c => (c.includes(' ') ? limpio.includes(c) : palabras.includes(c)));
+}
+
 async function iniciar() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
 
@@ -54,6 +65,26 @@ async function iniciar() {
       console.log('✅ Conectado a WhatsApp correctamente!');
     }
   });
+
+  // Ejecuta un módulo simple (no interactivo) y despacha el resultado según lo que devuelva:
+  // texto plano, {texto, aprendizaje} (pide feedback) o {texto, pendiente} (pide un dato más).
+  async function ejecutarModulo(remitente, modulo, texto) {
+    await sock.sendMessage(remitente, { text: modulo.procesando });
+    const resultado = await modulo.ejecutar(texto);
+    const esObjeto = resultado && typeof resultado === 'object';
+    const textoRespuesta = esObjeto ? resultado.texto : resultado;
+
+    if (esObjeto && resultado.aprendizaje) {
+      estados.set(remitente, { paso: 'esperando_feedback', modulo, feedbackContext: resultado.aprendizaje });
+      await sock.sendMessage(remitente, { text: `${textoRespuesta}\n\n¿Te sirvió? Escribí "sí" para que lo recuerde la próxima vez.` });
+    } else if (esObjeto && resultado.pendiente) {
+      estados.set(remitente, { paso: 'esperando_nombre_carpeta', modulo, pendiente: resultado.pendiente });
+      await sock.sendMessage(remitente, { text: textoRespuesta });
+    } else {
+      estados.set(remitente, { paso: 'esperando_opcion' }); // sesión sigue abierta
+      await sock.sendMessage(remitente, { text: textoRespuesta + '\n\n(Escribí "menu" para ver opciones o "exit" para salir)' });
+    }
+  }
 
   async function manejarMensaje(mensaje) {
     if (!mensaje.message) return;
@@ -112,16 +143,17 @@ async function iniciar() {
 
       // Paso: esperando confirmación de si la consulta encontró lo que el usuario buscaba
       if (sesion.paso === 'esperando_feedback') {
-        const esPositivo = ['si', 'sí', 'sirvio', 'sirvió', 'gracias', 'bien', 'genial', 'perfecto'].includes(textoLower);
-        if (esPositivo) {
+        if (esConfirmacionPositiva(textoLower)) {
           const { pregunta, notas } = sesion.feedbackContext;
-          nucleo.aprenderDeConsulta(pregunta, notas);
+          await nucleo.aprenderDeConsulta(pregunta, notas);
           estados.set(remitente, { paso: 'esperando_opcion' });
           await sock.sendMessage(remitente, { text: '🧠 Guardado, la próxima lo va a encontrar más rápido.\n\n(Escribí "menu" para ver opciones o "exit" para salir)' });
           return;
         }
-        // No fue una confirmación: no lo tratamos como error, seguimos el mensaje como si estuviera en el menú
-        sesion.paso = 'esperando_opcion';
+        // No fue una confirmación: lo tratamos como una consulta nueva (seguimos en el mismo módulo),
+        // no como si quisiera elegir una opción de menú.
+        await ejecutarModulo(remitente, sesion.modulo, texto);
+        return;
       }
 
       // Paso: esperando que elija opción del menú
@@ -162,23 +194,7 @@ async function iniciar() {
 
       // Paso: esperando el contenido real para un módulo simple
       if (sesion.paso === 'esperando_contenido') {
-        const { modulo } = sesion;
-
-        await sock.sendMessage(remitente, { text: modulo.procesando });
-        const resultado = await modulo.ejecutar(texto);
-        const esAprendible = resultado && typeof resultado === 'object';
-        const textoRespuesta = esAprendible ? resultado.texto : resultado;
-
-        if (esAprendible && resultado.aprendizaje) {
-          estados.set(remitente, { paso: 'esperando_feedback', feedbackContext: resultado.aprendizaje });
-          await sock.sendMessage(remitente, { text: `${textoRespuesta}\n\n¿Te sirvió? Escribí "sí" para que lo recuerde la próxima vez.` });
-        } else if (esAprendible && resultado.pendiente) {
-          estados.set(remitente, { paso: 'esperando_nombre_carpeta', modulo, pendiente: resultado.pendiente });
-          await sock.sendMessage(remitente, { text: textoRespuesta });
-        } else {
-          estados.set(remitente, { paso: 'esperando_opcion' }); // sesión sigue abierta
-          await sock.sendMessage(remitente, { text: textoRespuesta + '\n\n(Escribí "menu" para ver opciones o "exit" para salir)' });
-        }
+        await ejecutarModulo(remitente, sesion.modulo, texto);
         return;
       }
 
