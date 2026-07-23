@@ -19,7 +19,10 @@ module.exports = {
     return { texto: mensaje, confirmarEdicion: { instruccion: texto, candidatas } };
   },
   async confirmar(rutaNota, instruccion) {
-    await nucleo.aplicarEdicion(rutaNota, instruccion, 'modificar');
+    const resultado = await nucleo.aplicarEdicion(rutaNota, instruccion, 'modificar');
+    if (resultado && resultado.sinCambios) {
+      return `🤔 No encontré en "${rutaNota}" algo que coincida claramente con eso. No se modificó nada.`;
+    }
     return `✅ Modificado en "${rutaNota}"`;
   }
 };

@@ -84,6 +84,9 @@ async function iniciar() {
     } else if (esObjeto && resultado.confirmarEdicion) {
       estados.set(remitente, { paso: 'esperando_confirmacion_edicion', modulo, contexto: resultado.confirmarEdicion });
       await sock.sendMessage(remitente, { text: textoRespuesta });
+    } else if (esObjeto && resultado.confirmarBorradoTotal) {
+      estados.set(remitente, { paso: 'esperando_confirmacion_borrado_total', modulo, contexto: resultado.confirmarBorradoTotal });
+      await sock.sendMessage(remitente, { text: textoRespuesta });
     } else {
       estados.set(remitente, { paso: 'esperando_opcion' }); // sesión sigue abierta
       await sock.sendMessage(remitente, { text: textoRespuesta + '\n\n(Escribí "menu" para ver opciones o "exit" para salir)' });
@@ -142,6 +145,16 @@ async function iniciar() {
       if (textoLower === 'menu') {
         estados.set(remitente, { paso: 'esperando_opcion' });
         await sock.sendMessage(remitente, { text: MENU });
+        return;
+      }
+
+      if (textoLower === 'deshacer') {
+        const resultado = await nucleo.deshacerUltimoCambio();
+        estados.set(remitente, { paso: 'esperando_opcion' });
+        const texto = resultado.ok
+          ? `↩️ Deshecho: restauré "${resultado.ruta}" a como estaba antes.`
+          : `❌ ${resultado.motivo}`;
+        await sock.sendMessage(remitente, { text: `${texto}\n\n(Escribí "menu" para ver opciones o "exit" para salir)` });
         return;
       }
 
@@ -225,6 +238,23 @@ async function iniciar() {
         const respuesta = await modulo.confirmar(rutaElegida, instruccion);
         estados.set(remitente, { paso: 'esperando_opcion' });
         await sock.sendMessage(remitente, { text: respuesta + '\n\n(Escribí "menu" para ver opciones o "exit" para salir)' });
+        return;
+      }
+
+      // Paso: esperando la confirmación explícita para borrar una nota COMPLETA (acción más fuerte)
+      if (sesion.paso === 'esperando_confirmacion_borrado_total') {
+        const { modulo, contexto } = sesion;
+
+        if (textoLower === 'borrar todo') {
+          await sock.sendMessage(remitente, { text: modulo.procesando });
+          const respuesta = await modulo.confirmarBorradoTotal(contexto.ruta);
+          estados.set(remitente, { paso: 'esperando_opcion' });
+          await sock.sendMessage(remitente, { text: respuesta + '\n\n(Escribí "menu" para ver opciones o "exit" para salir)' });
+          return;
+        }
+
+        estados.set(remitente, { paso: 'esperando_opcion' });
+        await sock.sendMessage(remitente, { text: '❎ Cancelado, no se borró nada.\n\n(Escribí "menu" para ver opciones o "exit" para salir)' });
         return;
       }
 

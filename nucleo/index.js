@@ -29,12 +29,33 @@ async function listarNotasCacheadas() {
 function invalidarCacheNotas() { cacheNotas = null; }
 function invalidarResumen(ruta) { cacheResumenes.delete(ruta); }
 
+// Último cambio que pisó o borró una nota, para poder deshacerlo con el comando "deshacer".
+let ultimaAccion = null; // { ruta, archivoBackup }
+
 function guardarBackup(ruta, contenidoOriginal) {
   const carpetaBackup = path.join(__dirname, '..', 'backups');
   if (!fs.existsSync(carpetaBackup)) fs.mkdirSync(carpetaBackup, { recursive: true });
   const nombreSeguro = ruta.replace(/[\/\\]/g, '_');
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  fs.writeFileSync(path.join(carpetaBackup, `${nombreSeguro}.${timestamp}.md`), contenidoOriginal);
+  const archivoBackup = path.join(carpetaBackup, `${nombreSeguro}.${timestamp}.md`);
+  fs.writeFileSync(archivoBackup, contenidoOriginal);
+  ultimaAccion = { ruta, archivoBackup };
+}
+
+// Restaura la nota tocada por el último cambio (modificación, eliminación parcial o
+// borrado completo) a como estaba en su backup. Solo se puede deshacer una vez el
+// cambio más reciente; no hay historial de varios pasos.
+async function deshacerUltimoCambio() {
+  if (!ultimaAccion) return { ok: false, motivo: 'No hay ningún cambio reciente para deshacer.' };
+  const { ruta, archivoBackup } = ultimaAccion;
+  if (!fs.existsSync(archivoBackup)) return { ok: false, motivo: 'El backup ya no está disponible.' };
+
+  const contenidoOriginal = fs.readFileSync(archivoBackup, 'utf8');
+  await obsidian.sobrescribirNota(ruta, contenidoOriginal);
+  invalidarResumen(ruta);
+  invalidarCacheNotas();
+  ultimaAccion = null;
+  return { ok: true, ruta };
 }
 
 async function fusionarNota(rutaArchivo, ideaCruda) {
@@ -331,12 +352,18 @@ ${contenidoOriginal}
 
 Instrucción: ${instruccionEspecifica}
 
-Devolvé ÚNICAMENTE:
+Si NO encontrás en la nota algo que coincida claramente con la instrucción, no inventes ni adivines qué tocar: respondé únicamente la palabra SIN_CAMBIOS.
+
+Si sí encontrás la coincidencia, devolvé ÚNICAMENTE:
 <<<INICIO>>>
 (nota completa editada)
 <<<FIN>>>`;
 
   const respuesta = await ollama.preguntar(prompt, 0.1);
+  if (respuesta.trim().toUpperCase().startsWith('SIN_CAMBIOS')) {
+    return { sinCambios: true };
+  }
+
   const contenidoNuevo = ollama.extraerEntreMarcadores(respuesta);
   if (!contenidoNuevo) throw new Error('No se pudo interpretar la respuesta del modelo');
 
@@ -356,9 +383,33 @@ Devolvé ÚNICAMENTE:
   invalidarResumen(rutaNota);
 }
 
+// Distingue "borrá la idea de la lámpara" (fragmento dentro de una nota) de
+// "borrá la nota de recetas" (el archivo entero) — son acciones muy distintas.
+async function esBorradoDeNotaCompleta(instruccion) {
+  const prompt = `Un usuario le pidió a su asistente de notas: "${instruccion}"
+
+¿Esto significa que quiere borrar una nota/archivo ENTERO de su vault, o que quiere borrar solo una parte/fragmento de contenido dentro de una nota?
+
+Respondé ÚNICAMENTE "COMPLETA" o "FRAGMENTO".`;
+  const respuesta = await ollama.preguntar(prompt, 0.1);
+  return respuesta.toUpperCase().includes('COMPLETA');
+}
+
+// Borra el archivo entero (no un fragmento). Guarda backup igual, así se puede
+// deshacer con el comando "deshacer" aunque el archivo ya no exista.
+async function borrarNotaCompleta(ruta) {
+  const contenidoOriginal = await obsidian.leerNota(ruta);
+  guardarBackup(ruta, contenidoOriginal);
+  await obsidian.borrarNota(ruta);
+  invalidarCacheNotas();
+  invalidarResumen(ruta);
+  return ruta;
+}
+
 module.exports = {
   ...obsidian,
   transcribirAudio: whisper.transcribir,
   fusionarNota, anotarInteligente, crearCarpetaConNota, responderConsulta, aplicarEdicion,
-  elegirNotasRelevantes, decidirNotaDestino, aprenderDeConsulta
+  elegirNotasRelevantes, decidirNotaDestino, aprenderDeConsulta,
+  esBorradoDeNotaCompleta, borrarNotaCompleta, deshacerUltimoCambio
 };
